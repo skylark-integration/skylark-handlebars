@@ -1,11 +1,17 @@
 define([
     "skylark-langx/skylark",
+    './base',
+    "./utils",
+    "./runtime",
+    "./exception",
+    "./safe-string",
     './compiler/ast',
     './compiler/base',
     './compiler/compiler',
     './compiler/javascript-compiler',
     './compiler/visitor'
-], function (skylark, AST, base, compiler, JavaScriptCompiler, Visitor) {
+
+], function (skylark, base, Utils,runtime,Exception,SafeString, AST,cbase, compiler, JavaScriptCompiler, Visitor) {
     'use strict';
 
     function create() {
@@ -30,8 +36,8 @@ define([
         hb.AST = AST;
         hb.Compiler = compiler.Compiler;
         hb.JavaScriptCompiler = JavaScriptCompiler;
-        hb.Parser = base.Parser;
-        hb.parse = base.parse;
+        hb.Parser = cbase.Parser;
+        hb.parse = cbase.parse;
         hb.parseWithoutProcessing = base.parseWithoutProcessing;
         return hb;
     }

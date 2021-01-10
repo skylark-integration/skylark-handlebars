@@ -86,6 +86,918 @@
 
 })(function(define,require) {
 
+define('skylark-handlebars/utils',[],function () {
+    'use strict';
+    const escape = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#x27;',
+        '`': '&#x60;',
+        '=': '&#x3D;'
+    };
+    const badChars = /[&<>"'`=]/g, possible = /[&<>"'`=]/;
+    function escapeChar(chr) {
+        return escape[chr];
+    }
+    function extend(obj) {
+        for (let i = 1; i < arguments.length; i++) {
+            for (let key in arguments[i]) {
+                if (Object.prototype.hasOwnProperty.call(arguments[i], key)) {
+                    obj[key] = arguments[i][key];
+                }
+            }
+        }
+        return obj;
+    }
+    let toString = Object.prototype.toString;
+    let isFunction = function (value) {
+        return typeof value === 'function';
+    };
+    if (isFunction(/x/)) {
+        isFunction = function (value) {
+            return typeof value === 'function' && toString.call(value) === '[object Function]';
+        };
+    }
+    const isArray = Array.isArray || function (value) {
+        return value && typeof value === 'object' ? toString.call(value) === '[object Array]' : false;
+    };
+    function indexOf(array, value) {
+        for (let i = 0, len = array.length; i < len; i++) {
+            if (array[i] === value) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    function escapeExpression(string) {
+        if (typeof string !== 'string') {
+            if (string && string.toHTML) {
+                return string.toHTML();
+            } else if (string == null) {
+                return '';
+            } else if (!string) {
+                return string + '';
+            }
+            string = '' + string;
+        }
+        if (!possible.test(string)) {
+            return string;
+        }
+        return string.replace(badChars, escapeChar);
+    }
+    function isEmpty(value) {
+        if (!value && value !== 0) {
+            return true;
+        } else if (isArray(value) && value.length === 0) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+    function createFrame(object) {
+        let frame = extend({}, object);
+        frame._parent = object;
+        return frame;
+    }
+    function blockParams(params, ids) {
+        params.path = ids;
+        return params;
+    }
+    function appendContextPath(contextPath, id) {
+        return (contextPath ? contextPath + '.' : '') + id;
+    }
+    return {
+        extend: extend,
+        toString: toString,
+        isFunction,
+        isArray: isArray,
+        indexOf: indexOf,
+        escapeExpression: escapeExpression,
+        isEmpty: isEmpty,
+        createFrame: createFrame,
+        blockParams: blockParams,
+        appendContextPath: appendContextPath
+    };
+});
+define('skylark-handlebars/exception',[],function () {
+    'use strict';
+    const errorProps = [
+        'description',
+        'fileName',
+        'lineNumber',
+        'endLineNumber',
+        'message',
+        'name',
+        'number',
+        'stack'
+    ];
+    function Exception(message, node) {
+        let loc = node && node.loc, line, endLineNumber, column, endColumn;
+        if (loc) {
+            line = loc.start.line;
+            endLineNumber = loc.end.line;
+            column = loc.start.column;
+            endColumn = loc.end.column;
+            message += ' - ' + line + ':' + column;
+        }
+        let tmp = Error.prototype.constructor.call(this, message);
+        for (let idx = 0; idx < errorProps.length; idx++) {
+            this[errorProps[idx]] = tmp[errorProps[idx]];
+        }
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, Exception);
+        }
+        try {
+            if (loc) {
+                this.lineNumber = line;
+                this.endLineNumber = endLineNumber;
+                if (Object.defineProperty) {
+                    Object.defineProperty(this, 'column', {
+                        value: column,
+                        enumerable: true
+                    });
+                    Object.defineProperty(this, 'endColumn', {
+                        value: endColumn,
+                        enumerable: true
+                    });
+                } else {
+                    this.column = column;
+                    this.endColumn = endColumn;
+                }
+            }
+        } catch (nop) {
+        }
+    }
+    Exception.prototype = new Error();
+    return Exception;
+});
+define('skylark-handlebars/helpers/block-helper-missing',['../utils'], function (utils) {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('blockHelperMissing', function (context, options) {
+            let inverse = options.inverse, fn = options.fn;
+            if (context === true) {
+                return fn(this);
+            } else if (context === false || context == null) {
+                return inverse(this);
+            } else if (utils.isArray(context)) {
+                if (context.length > 0) {
+                    if (options.ids) {
+                        options.ids = [options.name];
+                    }
+                    return instance.helpers.each(context, options);
+                } else {
+                    return inverse(this);
+                }
+            } else {
+                if (options.data && options.ids) {
+                    let data = utils.createFrame(options.data);
+                    data.contextPath = utils.appendContextPath(options.data.contextPath, options.name);
+                    options = { data: data };
+                }
+                return fn(context, options);
+            }
+        });
+    };
+});
+define('skylark-handlebars/helpers/each',[
+    '../utils',
+    '../exception'
+], function (utils, Exception) {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('each', function (context, options) {
+            if (!options) {
+                throw new Exception('Must pass iterator to #each');
+            }
+            let fn = options.fn, inverse = options.inverse, i = 0, ret = '', data, contextPath;
+            if (options.data && options.ids) {
+                contextPath = utils.appendContextPath(options.data.contextPath, options.ids[0]) + '.';
+            }
+            if (utils.isFunction(context)) {
+                context = context.call(this);
+            }
+            if (options.data) {
+                data = utils.createFrame(options.data);
+            }
+            function execIteration(field, index, last) {
+                if (data) {
+                    data.key = field;
+                    data.index = index;
+                    data.first = index === 0;
+                    data.last = !!last;
+                    if (contextPath) {
+                        data.contextPath = contextPath + field;
+                    }
+                }
+                ret = ret + fn(context[field], {
+                    data: data,
+                    blockParams: utils.blockParams([
+                        context[field],
+                        field
+                    ], [
+                        contextPath + field,
+                        null
+                    ])
+                });
+            }
+            if (context && typeof context === 'object') {
+                if (utils.isArray(context)) {
+                    for (let j = context.length; i < j; i++) {
+                        if (i in context) {
+                            execIteration(i, i, i === context.length - 1);
+                        }
+                    }
+                } else if (global.Symbol && context[global.Symbol.iterator]) {
+                    const newContext = [];
+                    const iterator = context[global.Symbol.iterator]();
+                    for (let it = iterator.next(); !it.done; it = iterator.next()) {
+                        newContext.push(it.value);
+                    }
+                    context = newContext;
+                    for (let j = context.length; i < j; i++) {
+                        execIteration(i, i, i === context.length - 1);
+                    }
+                } else {
+                    let priorKey;
+                    Object.keys(context).forEach(key => {
+                        if (priorKey !== undefined) {
+                            execIteration(priorKey, i - 1);
+                        }
+                        priorKey = key;
+                        i++;
+                    });
+                    if (priorKey !== undefined) {
+                        execIteration(priorKey, i - 1, true);
+                    }
+                }
+            }
+            if (i === 0) {
+                ret = inverse(this);
+            }
+            return ret;
+        });
+    };
+});
+define('skylark-handlebars/helpers/helper-missing',['../exception'], function (Exception) {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('helperMissing', function () {
+            if (arguments.length === 1) {
+                return undefined;
+            } else {
+                throw new Exception('Missing helper: "' + arguments[arguments.length - 1].name + '"');
+            }
+        });
+    };
+});
+define('skylark-handlebars/helpers/if',[
+    '../utils',
+    '../exception'
+], function (utils, Exception) {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('if', function (conditional, options) {
+            if (arguments.length != 2) {
+                throw new Exception('#if requires exactly one argument');
+            }
+            if (utils.isFunction(conditional)) {
+                conditional = conditional.call(this);
+            }
+            if (!options.hash.includeZero && !conditional || utils.isEmpty(conditional)) {
+                return options.inverse(this);
+            } else {
+                return options.fn(this);
+            }
+        });
+        instance.registerHelper('unless', function (conditional, options) {
+            if (arguments.length != 2) {
+                throw new Exception('#unless requires exactly one argument');
+            }
+            return instance.helpers['if'].call(this, conditional, {
+                fn: options.inverse,
+                inverse: options.fn,
+                hash: options.hash
+            });
+        });
+    };
+});
+define('skylark-handlebars/helpers/log',[],function () {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('log', function () {
+            let args = [undefined], options = arguments[arguments.length - 1];
+            for (let i = 0; i < arguments.length - 1; i++) {
+                args.push(arguments[i]);
+            }
+            let level = 1;
+            if (options.hash.level != null) {
+                level = options.hash.level;
+            } else if (options.data && options.data.level != null) {
+                level = options.data.level;
+            }
+            args[0] = level;
+            instance.log(...args);
+        });
+    };
+});
+define('skylark-handlebars/helpers/lookup',[],function () {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('lookup', function (obj, field, options) {
+            if (!obj) {
+                return obj;
+            }
+            return options.lookupProperty(obj, field);
+        });
+    };
+});
+define('skylark-handlebars/helpers/with',[
+    '../utils',
+    '../exception'
+], function (utils, Exception) {
+    'use strict';
+    return function (instance) {
+        instance.registerHelper('with', function (context, options) {
+            if (arguments.length != 2) {
+                throw new Exception('#with requires exactly one argument');
+            }
+            if (utils.isFunction(context)) {
+                context = context.call(this);
+            }
+            let fn = options.fn;
+            if (!utils.isEmpty(context)) {
+                let data = options.data;
+                if (options.data && options.ids) {
+                    data = utils.createFrame(options.data);
+                    data.contextPath = utils.appendContextPath(options.data.contextPath, options.ids[0]);
+                }
+                return fn(context, {
+                    data: data,
+                    blockParams: utils.blockParams([context], [data && data.contextPath])
+                });
+            } else {
+                return options.inverse(this);
+            }
+        });
+    };
+});
+define('skylark-handlebars/helpers',[
+    './helpers/block-helper-missing',
+    './helpers/each',
+    './helpers/helper-missing',
+    './helpers/if',
+    './helpers/log',
+    './helpers/lookup',
+    './helpers/with'
+], function (registerBlockHelperMissing, registerEach, registerHelperMissing, registerIf, registerLog, registerLookup, registerWith) {
+    'use strict';
+    function registerDefaultHelpers(instance) {
+        registerBlockHelperMissing(instance);
+        registerEach(instance);
+        registerHelperMissing(instance);
+        registerIf(instance);
+        registerLog(instance);
+        registerLookup(instance);
+        registerWith(instance);
+    }
+    function moveHelperToHooks(instance, helperName, keepHelper) {
+        if (instance.helpers[helperName]) {
+            instance.hooks[helperName] = instance.helpers[helperName];
+            if (!keepHelper) {
+                delete instance.helpers[helperName];
+            }
+        }
+    }
+    return {
+        registerDefaultHelpers: registerDefaultHelpers,
+        moveHelperToHooks: moveHelperToHooks
+    };
+});
+define('skylark-handlebars/decorators/inline',['../utils'], function (utils) {
+    'use strict';
+    return function (instance) {
+        instance.registerDecorator('inline', function (fn, props, container, options) {
+            let ret = fn;
+            if (!props.partials) {
+                props.partials = {};
+                ret = function (context, options) {
+                    let original = container.partials;
+                    container.partials = utils.extend({}, original, props.partials);
+                    let ret = fn(context, options);
+                    container.partials = original;
+                    return ret;
+                };
+            }
+            props.partials[options.args[0]] = options.fn;
+            return ret;
+        });
+    };
+});
+define('skylark-handlebars/decorators',['./decorators/inline'], function (registerInline) {
+    'use strict';
+    function registerDefaultDecorators(instance) {
+        registerInline(instance);
+    }
+    return { registerDefaultDecorators: registerDefaultDecorators };
+});
+define('skylark-handlebars/logger',['./utils'], function (utils) {
+    'use strict';
+    let logger = {
+        methodMap: [
+            'debug',
+            'info',
+            'warn',
+            'error'
+        ],
+        level: 'info',
+        lookupLevel: function (level) {
+            if (typeof level === 'string') {
+                let levelMap = utils.indexOf(logger.methodMap, level.toLowerCase());
+                if (levelMap >= 0) {
+                    level = levelMap;
+                } else {
+                    level = parseInt(level, 10);
+                }
+            }
+            return level;
+        },
+        log: function (level, ...message) {
+            level = logger.lookupLevel(level);
+            if (typeof console !== 'undefined' && logger.lookupLevel(logger.level) <= level) {
+                let method = logger.methodMap[level];
+                if (!console[method]) {
+                    method = 'log';
+                }
+                console[method](...message);
+            }
+        }
+    };
+    return logger;
+});
+define('skylark-handlebars/internal/create-new-lookup-object',['../utils'], function (utils) {
+    'use strict';
+    function createNewLookupObject(...sources) {
+        return utils.extend(Object.create(null), ...sources);
+    }
+    return { createNewLookupObject: createNewLookupObject };
+});
+define('skylark-handlebars/internal/proto-access',[
+    './create-new-lookup-object',
+    '../logger'
+], function (a, logger) {
+    'use strict';
+    const loggedProperties = Object.create(null);
+    function createProtoAccessControl(runtimeOptions) {
+        let defaultMethodWhiteList = Object.create(null);
+        defaultMethodWhiteList['constructor'] = false;
+        defaultMethodWhiteList['__defineGetter__'] = false;
+        defaultMethodWhiteList['__defineSetter__'] = false;
+        defaultMethodWhiteList['__lookupGetter__'] = false;
+        let defaultPropertyWhiteList = Object.create(null);
+        defaultPropertyWhiteList['__proto__'] = false;
+        return {
+            properties: {
+                whitelist: a.createNewLookupObject(defaultPropertyWhiteList, runtimeOptions.allowedProtoProperties),
+                defaultValue: runtimeOptions.allowProtoPropertiesByDefault
+            },
+            methods: {
+                whitelist: a.createNewLookupObject(defaultMethodWhiteList, runtimeOptions.allowedProtoMethods),
+                defaultValue: runtimeOptions.allowProtoMethodsByDefault
+            }
+        };
+    }
+    function resultIsAllowed(result, protoAccessControl, propertyName) {
+        if (typeof result === 'function') {
+            return checkWhiteList(protoAccessControl.methods, propertyName);
+        } else {
+            return checkWhiteList(protoAccessControl.properties, propertyName);
+        }
+    }
+    function checkWhiteList(protoAccessControlForType, propertyName) {
+        if (protoAccessControlForType.whitelist[propertyName] !== undefined) {
+            return protoAccessControlForType.whitelist[propertyName] === true;
+        }
+        if (protoAccessControlForType.defaultValue !== undefined) {
+            return protoAccessControlForType.defaultValue;
+        }
+        logUnexpecedPropertyAccessOnce(propertyName);
+        return false;
+    }
+    function logUnexpecedPropertyAccessOnce(propertyName) {
+        if (loggedProperties[propertyName] !== true) {
+            loggedProperties[propertyName] = true;
+            logger.log('error', `Handlebars: Access has been denied to resolve the property "${ propertyName }" because it is not an "own property" of its parent.\n` + `You can add a runtime option to disable the check or this warning:\n` + `See https://handlebarsjs.com/api-reference/runtime-options.html#options-to-control-prototype-access for details`);
+        }
+    }
+    function resetLoggedProperties() {
+        Object.keys(loggedProperties).forEach(propertyName => {
+            delete loggedProperties[propertyName];
+        });
+    }
+    return {
+        createProtoAccessControl: createProtoAccessControl,
+        resultIsAllowed: resultIsAllowed,
+        resetLoggedProperties: resetLoggedProperties
+    };
+});
+define('skylark-handlebars/base',[
+    './utils',
+    './exception',
+    './helpers',
+    './decorators',
+    './logger',
+    './internal/proto-access'
+], function (utils, Exception, helpers, c, logger, protoAccess) {
+    'use strict';
+    const VERSION = '4.7.6';
+    const COMPILER_REVISION = 8;
+    const LAST_COMPATIBLE_COMPILER_REVISION = 7;
+    const REVISION_CHANGES = {
+        1: '<= 1.0.rc.2',
+        2: '== 1.0.0-rc.3',
+        3: '== 1.0.0-rc.4',
+        4: '== 1.x.x',
+        5: '== 2.0.0-alpha.x',
+        6: '>= 2.0.0-beta.1',
+        7: '>= 4.0.0 <4.3.0',
+        8: '>= 4.3.0'
+    };
+    const objectType = '[object Object]';
+    function HandlebarsEnvironment(helpers, partials, decorators) {
+        this.helpers = helpers || {};
+        this.partials = partials || {};
+        this.decorators = decorators || {};
+        helpers.registerDefaultHelpers(this);
+        c.registerDefaultDecorators(this);
+    }
+    HandlebarsEnvironment.prototype = {
+        constructor: HandlebarsEnvironment,
+        logger: logger,
+        log: logger.log,
+        registerHelper: function (name, fn) {
+            if (utils.toString.call(name) === objectType) {
+                if (fn) {
+                    throw new Exception('Arg not supported with multiple helpers');
+                }
+                utils.extend(this.helpers, name);
+            } else {
+                this.helpers[name] = fn;
+            }
+        },
+        unregisterHelper: function (name) {
+            delete this.helpers[name];
+        },
+        registerPartial: function (name, partial) {
+            if (utils.toString.call(name) === objectType) {
+                utils.extend(this.partials, name);
+            } else {
+                if (typeof partial === 'undefined') {
+                    throw new Exception(`Attempting to register a partial called "${ name }" as undefined`);
+                }
+                this.partials[name] = partial;
+            }
+        },
+        unregisterPartial: function (name) {
+            delete this.partials[name];
+        },
+        registerDecorator: function (name, fn) {
+            if (utils.toString.call(name) === objectType) {
+                if (fn) {
+                    throw new Exception('Arg not supported with multiple decorators');
+                }
+                utils.extend(this.decorators, name);
+            } else {
+                this.decorators[name] = fn;
+            }
+        },
+        unregisterDecorator: function (name) {
+            delete this.decorators[name];
+        },
+        resetLoggedPropertyAccesses: function () {
+            protoAccess.resetLoggedProperties();
+        }
+    };
+    let log = logger.log,
+        createFrame = utils.createFrame;
+    return {
+        VERSION,
+        COMPILER_REVISION,
+        LAST_COMPATIBLE_COMPILER_REVISION,
+        REVISION_CHANGES,
+        HandlebarsEnvironment,
+        log,
+        createFrame,
+        logger
+    };
+});
+define('skylark-handlebars/internal/wrapHelper',[],function () {
+    'use strict';
+    function wrapHelper(helper, transformOptionsFn) {
+        if (typeof helper !== 'function') {
+            return helper;
+        }
+        let wrapper = function () {
+            const options = arguments[arguments.length - 1];
+            arguments[arguments.length - 1] = transformOptionsFn(options);
+            return helper.apply(this, arguments);
+        };
+        return wrapper;
+    }
+    return { wrapHelper: wrapHelper };
+});
+define('skylark-handlebars/runtime',[
+    './utils',
+    './exception',
+    './base',
+    './helpers',
+    './internal/wrapHelper',
+    './internal/proto-access'
+], function (Utils, Exception, a, b, c, d) {
+    'use strict';
+    function checkRevision(compilerInfo) {
+        const compilerRevision = compilerInfo && compilerInfo[0] || 1, currentRevision = a.COMPILER_REVISION;
+        if (compilerRevision >= a.LAST_COMPATIBLE_COMPILER_REVISION && compilerRevision <= a.COMPILER_REVISION) {
+            return;
+        }
+        if (compilerRevision < a.LAST_COMPATIBLE_COMPILER_REVISION) {
+            const runtimeVersions = a.REVISION_CHANGES[currentRevision], compilerVersions = a.REVISION_CHANGES[compilerRevision];
+            throw new Exception('Template was precompiled with an older version of Handlebars than the current runtime. ' + 'Please update your precompiler to a newer version (' + runtimeVersions + ') or downgrade your runtime to an older version (' + compilerVersions + ').');
+        } else {
+            throw new Exception('Template was precompiled with a newer version of Handlebars than the current runtime. ' + 'Please update your runtime to a newer version (' + compilerInfo[1] + ').');
+        }
+    }
+    function template(templateSpec, env) {
+        if (!env) {
+            throw new Exception('No environment passed to template');
+        }
+        if (!templateSpec || !templateSpec.main) {
+            throw new Exception('Unknown template object: ' + typeof templateSpec);
+        }
+        templateSpec.main.decorator = templateSpec.main_d;
+        env.VM.checkRevision(templateSpec.compiler);
+        const templateWasPrecompiledWithCompilerV7 = templateSpec.compiler && templateSpec.compiler[0] === 7;
+        function invokePartialWrapper(partial, context, options) {
+            if (options.hash) {
+                context = Utils.extend({}, context, options.hash);
+                if (options.ids) {
+                    options.ids[0] = true;
+                }
+            }
+            partial = env.VM.resolvePartial.call(this, partial, context, options);
+            let extendedOptions = Utils.extend({}, options, {
+                hooks: this.hooks,
+                protoAccessControl: this.protoAccessControl
+            });
+            let result = env.VM.invokePartial.call(this, partial, context, extendedOptions);
+            if (result == null && env.compile) {
+                options.partials[options.name] = env.compile(partial, templateSpec.compilerOptions, env);
+                result = options.partials[options.name](context, extendedOptions);
+            }
+            if (result != null) {
+                if (options.indent) {
+                    let lines = result.split('\n');
+                    for (let i = 0, l = lines.length; i < l; i++) {
+                        if (!lines[i] && i + 1 === l) {
+                            break;
+                        }
+                        lines[i] = options.indent + lines[i];
+                    }
+                    result = lines.join('\n');
+                }
+                return result;
+            } else {
+                throw new Exception('The partial ' + options.name + ' could not be compiled when running in runtime-only mode');
+            }
+        }
+        let container = {
+            strict: function (obj, name, loc) {
+                if (!obj || !(name in obj)) {
+                    throw new Exception('"' + name + '" not defined in ' + obj, { loc: loc });
+                }
+                return obj[name];
+            },
+            lookupProperty: function (parent, propertyName) {
+                let result = parent[propertyName];
+                if (result == null) {
+                    return result;
+                }
+                if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+                    return result;
+                }
+                if (d.resultIsAllowed(result, container.protoAccessControl, propertyName)) {
+                    return result;
+                }
+                return undefined;
+            },
+            lookup: function (depths, name) {
+                const len = depths.length;
+                for (let i = 0; i < len; i++) {
+                    let result = depths[i] && container.lookupProperty(depths[i], name);
+                    if (result != null) {
+                        return depths[i][name];
+                    }
+                }
+            },
+            lambda: function (current, context) {
+                return typeof current === 'function' ? current.call(context) : current;
+            },
+            escapeExpression: Utils.escapeExpression,
+            invokePartial: invokePartialWrapper,
+            fn: function (i) {
+                let ret = templateSpec[i];
+                ret.decorator = templateSpec[i + '_d'];
+                return ret;
+            },
+            programs: [],
+            program: function (i, data, declaredBlockParams, blockParams, depths) {
+                let programWrapper = this.programs[i], fn = this.fn(i);
+                if (data || depths || blockParams || declaredBlockParams) {
+                    programWrapper = wrapProgram(this, i, fn, data, declaredBlockParams, blockParams, depths);
+                } else if (!programWrapper) {
+                    programWrapper = this.programs[i] = wrapProgram(this, i, fn);
+                }
+                return programWrapper;
+            },
+            data: function (value, depth) {
+                while (value && depth--) {
+                    value = value._parent;
+                }
+                return value;
+            },
+            mergeIfNeeded: function (param, common) {
+                let obj = param || common;
+                if (param && common && param !== common) {
+                    obj = Utils.extend({}, common, param);
+                }
+                return obj;
+            },
+            nullContext: Object.seal({}),
+            noop: env.VM.noop,
+            compilerInfo: templateSpec.compiler
+        };
+        function ret(context, options = {}) {
+            let data = options.data;
+            ret._setup(options);
+            if (!options.partial && templateSpec.useData) {
+                data = initData(context, data);
+            }
+            let depths, blockParams = templateSpec.useBlockParams ? [] : undefined;
+            if (templateSpec.useDepths) {
+                if (options.depths) {
+                    depths = context != options.depths[0] ? [context].concat(options.depths) : options.depths;
+                } else {
+                    depths = [context];
+                }
+            }
+            function main(context) {
+                return '' + templateSpec.main(container, context, container.helpers, container.partials, data, blockParams, depths);
+            }
+            main = executeDecorators(templateSpec.main, main, container, options.depths || [], data, blockParams);
+            return main(context, options);
+        }
+        ret.isTop = true;
+        ret._setup = function (options) {
+            if (!options.partial) {
+                let mergedHelpers = Utils.extend({}, env.helpers, options.helpers);
+                wrapHelpersToPassLookupProperty(mergedHelpers, container);
+                container.helpers = mergedHelpers;
+                if (templateSpec.usePartial) {
+                    container.partials = container.mergeIfNeeded(options.partials, env.partials);
+                }
+                if (templateSpec.usePartial || templateSpec.useDecorators) {
+                    container.decorators = Utils.extend({}, env.decorators, options.decorators);
+                }
+                container.hooks = {};
+                container.protoAccessControl = d.createProtoAccessControl(options);
+                let keepHelperInHelpers = options.allowCallsToHelperMissing || templateWasPrecompiledWithCompilerV7;
+                b.moveHelperToHooks(container, 'helperMissing', keepHelperInHelpers);
+                b.moveHelperToHooks(container, 'blockHelperMissing', keepHelperInHelpers);
+            } else {
+                container.protoAccessControl = options.protoAccessControl;
+                container.helpers = options.helpers;
+                container.partials = options.partials;
+                container.decorators = options.decorators;
+                container.hooks = options.hooks;
+            }
+        };
+        ret._child = function (i, data, blockParams, depths) {
+            if (templateSpec.useBlockParams && !blockParams) {
+                throw new Exception('must pass block params');
+            }
+            if (templateSpec.useDepths && !depths) {
+                throw new Exception('must pass parent depths');
+            }
+            return wrapProgram(container, i, templateSpec[i], data, 0, blockParams, depths);
+        };
+        return ret;
+    }
+    function wrapProgram(container, i, fn, data, declaredBlockParams, blockParams, depths) {
+        function prog(context, options = {}) {
+            let currentDepths = depths;
+            if (depths && context != depths[0] && !(context === container.nullContext && depths[0] === null)) {
+                currentDepths = [context].concat(depths);
+            }
+            return fn(container, context, container.helpers, container.partials, options.data || data, blockParams && [options.blockParams].concat(blockParams), currentDepths);
+        }
+        prog = executeDecorators(fn, prog, container, depths, data, blockParams);
+        prog.program = i;
+        prog.depth = depths ? depths.length : 0;
+        prog.blockParams = declaredBlockParams || 0;
+        return prog;
+    }
+    function resolvePartial(partial, context, options) {
+        if (!partial) {
+            if (options.name === '@partial-block') {
+                partial = options.data['partial-block'];
+            } else {
+                partial = options.partials[options.name];
+            }
+        } else if (!partial.call && !options.name) {
+            options.name = partial;
+            partial = options.partials[partial];
+        }
+        return partial;
+    }
+    function invokePartial(partial, context, options) {
+        const currentPartialBlock = options.data && options.data['partial-block'];
+        options.partial = true;
+        if (options.ids) {
+            options.data.contextPath = options.ids[0] || options.data.contextPath;
+        }
+        let partialBlock;
+        if (options.fn && options.fn !== noop) {
+            options.data = a.createFrame(options.data);
+            let fn = options.fn;
+            partialBlock = options.data['partial-block'] = function partialBlockWrapper(context, options = {}) {
+                options.data = a.createFrame(options.data);
+                options.data['partial-block'] = currentPartialBlock;
+                return fn(context, options);
+            };
+            if (fn.partials) {
+                options.partials = Utils.extend({}, options.partials, fn.partials);
+            }
+        }
+        if (partial === undefined && partialBlock) {
+            partial = partialBlock;
+        }
+        if (partial === undefined) {
+            throw new Exception('The partial ' + options.name + ' could not be found');
+        } else if (partial instanceof Function) {
+            return partial(context, options);
+        }
+    }
+    function noop() {
+        return '';
+    }
+    function initData(context, data) {
+        if (!data || !('root' in data)) {
+            data = data ? a.createFrame(data) : {};
+            data.root = context;
+        }
+        return data;
+    }
+    function executeDecorators(fn, prog, container, depths, data, blockParams) {
+        if (fn.decorator) {
+            let props = {};
+            prog = fn.decorator(prog, props, container, depths && depths[0], data, blockParams, depths);
+            Utils.extend(prog, props);
+        }
+        return prog;
+    }
+    function wrapHelpersToPassLookupProperty(mergedHelpers, container) {
+        Object.keys(mergedHelpers).forEach(helperName => {
+            let helper = mergedHelpers[helperName];
+            mergedHelpers[helperName] = passLookupPropertyOption(helper, container);
+        });
+    }
+    function passLookupPropertyOption(helper, container) {
+        const lookupProperty = container.lookupProperty;
+        return c.wrapHelper(helper, options => {
+            return Utils.extend({ lookupProperty }, options);
+        });
+    }
+    return {
+        checkRevision: checkRevision,
+        template: template,
+        wrapProgram: wrapProgram,
+        resolvePartial: resolvePartial,
+        invokePartial: invokePartial,
+        noop: noop
+    };
+});
+define('skylark-handlebars/safe-string',[],function () {
+    'use strict';
+    function SafeString(string) {
+        this.string = string;
+    }
+    SafeString.prototype.toString = SafeString.prototype.toHTML = function () {
+        return '' + this.string;
+    };
+    return SafeString;
+});
 define('skylark-handlebars/compiler/ast',[],function () {
     'use strict';
     let AST = {
@@ -846,58 +1758,6 @@ define('skylark-handlebars/compiler/parser',[],function(){
 	return handlebars;
 
 });
-define('skylark-handlebars/exception',[],function () {
-    'use strict';
-    const errorProps = [
-        'description',
-        'fileName',
-        'lineNumber',
-        'endLineNumber',
-        'message',
-        'name',
-        'number',
-        'stack'
-    ];
-    function Exception(message, node) {
-        let loc = node && node.loc, line, endLineNumber, column, endColumn;
-        if (loc) {
-            line = loc.start.line;
-            endLineNumber = loc.end.line;
-            column = loc.start.column;
-            endColumn = loc.end.column;
-            message += ' - ' + line + ':' + column;
-        }
-        let tmp = Error.prototype.constructor.call(this, message);
-        for (let idx = 0; idx < errorProps.length; idx++) {
-            this[errorProps[idx]] = tmp[errorProps[idx]];
-        }
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, Exception);
-        }
-        try {
-            if (loc) {
-                this.lineNumber = line;
-                this.endLineNumber = endLineNumber;
-                if (Object.defineProperty) {
-                    Object.defineProperty(this, 'column', {
-                        value: column,
-                        enumerable: true
-                    });
-                    Object.defineProperty(this, 'endColumn', {
-                        value: endColumn,
-                        enumerable: true
-                    });
-                } else {
-                    this.column = column;
-                    this.endColumn = endColumn;
-                }
-            }
-        } catch (nop) {
-        }
-    }
-    Exception.prototype = new Error();
-    return Exception;
-});
 define('skylark-handlebars/compiler/visitor',['../exception'], function (Exception) {
     'use strict';
     function Visitor() {
@@ -1318,101 +2178,6 @@ define('skylark-handlebars/compiler/helpers',['../exception'], function (Excepti
         prepareBlock: prepareBlock,
         prepareProgram: prepareProgram,
         preparePartialBlock: preparePartialBlock
-    };
-});
-define('skylark-handlebars/utils',[],function () {
-    'use strict';
-    const escape = {
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#x27;',
-        '`': '&#x60;',
-        '=': '&#x3D;'
-    };
-    const badChars = /[&<>"'`=]/g, possible = /[&<>"'`=]/;
-    function escapeChar(chr) {
-        return escape[chr];
-    }
-    function extend(obj) {
-        for (let i = 1; i < arguments.length; i++) {
-            for (let key in arguments[i]) {
-                if (Object.prototype.hasOwnProperty.call(arguments[i], key)) {
-                    obj[key] = arguments[i][key];
-                }
-            }
-        }
-        return obj;
-    }
-    let toString = Object.prototype.toString;
-    let isFunction = function (value) {
-        return typeof value === 'function';
-    };
-    if (isFunction(/x/)) {
-        isFunction = function (value) {
-            return typeof value === 'function' && toString.call(value) === '[object Function]';
-        };
-    }
-    const isArray = Array.isArray || function (value) {
-        return value && typeof value === 'object' ? toString.call(value) === '[object Array]' : false;
-    };
-    function indexOf(array, value) {
-        for (let i = 0, len = array.length; i < len; i++) {
-            if (array[i] === value) {
-                return i;
-            }
-        }
-        return -1;
-    }
-    function escapeExpression(string) {
-        if (typeof string !== 'string') {
-            if (string && string.toHTML) {
-                return string.toHTML();
-            } else if (string == null) {
-                return '';
-            } else if (!string) {
-                return string + '';
-            }
-            string = '' + string;
-        }
-        if (!possible.test(string)) {
-            return string;
-        }
-        return string.replace(badChars, escapeChar);
-    }
-    function isEmpty(value) {
-        if (!value && value !== 0) {
-            return true;
-        } else if (isArray(value) && value.length === 0) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-    function createFrame(object) {
-        let frame = extend({}, object);
-        frame._parent = object;
-        return frame;
-    }
-    function blockParams(params, ids) {
-        params.path = ids;
-        return params;
-    }
-    function appendContextPath(contextPath, id) {
-        return (contextPath ? contextPath + '.' : '') + id;
-    }
-    return {
-        extend: extend,
-        toString: toString,
-        isFunction,
-        isArray: isArray,
-        indexOf: indexOf,
-        escapeExpression: escapeExpression,
-        isEmpty: isEmpty,
-        createFrame: createFrame,
-        blockParams: blockParams,
-        appendContextPath: appendContextPath
     };
 });
 define('skylark-handlebars/compiler/base',[
@@ -1864,466 +2629,6 @@ define('skylark-handlebars/compiler/compiler',[
         Compiler: Compiler,
         precompile: precompile,
         compile: compile
-    };
-});
-define('skylark-handlebars/helpers/block-helper-missing',['../utils'], function (utils) {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('blockHelperMissing', function (context, options) {
-            let inverse = options.inverse, fn = options.fn;
-            if (context === true) {
-                return fn(this);
-            } else if (context === false || context == null) {
-                return inverse(this);
-            } else if (utils.isArray(context)) {
-                if (context.length > 0) {
-                    if (options.ids) {
-                        options.ids = [options.name];
-                    }
-                    return instance.helpers.each(context, options);
-                } else {
-                    return inverse(this);
-                }
-            } else {
-                if (options.data && options.ids) {
-                    let data = utils.createFrame(options.data);
-                    data.contextPath = utils.appendContextPath(options.data.contextPath, options.name);
-                    options = { data: data };
-                }
-                return fn(context, options);
-            }
-        });
-    };
-});
-define('skylark-handlebars/helpers/each',[
-    '../utils',
-    '../exception'
-], function (utils, Exception) {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('each', function (context, options) {
-            if (!options) {
-                throw new Exception('Must pass iterator to #each');
-            }
-            let fn = options.fn, inverse = options.inverse, i = 0, ret = '', data, contextPath;
-            if (options.data && options.ids) {
-                contextPath = utils.appendContextPath(options.data.contextPath, options.ids[0]) + '.';
-            }
-            if (utils.isFunction(context)) {
-                context = context.call(this);
-            }
-            if (options.data) {
-                data = utils.createFrame(options.data);
-            }
-            function execIteration(field, index, last) {
-                if (data) {
-                    data.key = field;
-                    data.index = index;
-                    data.first = index === 0;
-                    data.last = !!last;
-                    if (contextPath) {
-                        data.contextPath = contextPath + field;
-                    }
-                }
-                ret = ret + fn(context[field], {
-                    data: data,
-                    blockParams: utils.blockParams([
-                        context[field],
-                        field
-                    ], [
-                        contextPath + field,
-                        null
-                    ])
-                });
-            }
-            if (context && typeof context === 'object') {
-                if (utils.isArray(context)) {
-                    for (let j = context.length; i < j; i++) {
-                        if (i in context) {
-                            execIteration(i, i, i === context.length - 1);
-                        }
-                    }
-                } else if (global.Symbol && context[global.Symbol.iterator]) {
-                    const newContext = [];
-                    const iterator = context[global.Symbol.iterator]();
-                    for (let it = iterator.next(); !it.done; it = iterator.next()) {
-                        newContext.push(it.value);
-                    }
-                    context = newContext;
-                    for (let j = context.length; i < j; i++) {
-                        execIteration(i, i, i === context.length - 1);
-                    }
-                } else {
-                    let priorKey;
-                    Object.keys(context).forEach(key => {
-                        if (priorKey !== undefined) {
-                            execIteration(priorKey, i - 1);
-                        }
-                        priorKey = key;
-                        i++;
-                    });
-                    if (priorKey !== undefined) {
-                        execIteration(priorKey, i - 1, true);
-                    }
-                }
-            }
-            if (i === 0) {
-                ret = inverse(this);
-            }
-            return ret;
-        });
-    };
-});
-define('skylark-handlebars/helpers/helper-missing',['../exception'], function (Exception) {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('helperMissing', function () {
-            if (arguments.length === 1) {
-                return undefined;
-            } else {
-                throw new Exception('Missing helper: "' + arguments[arguments.length - 1].name + '"');
-            }
-        });
-    };
-});
-define('skylark-handlebars/helpers/if',[
-    '../utils',
-    '../exception'
-], function (utils, Exception) {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('if', function (conditional, options) {
-            if (arguments.length != 2) {
-                throw new Exception('#if requires exactly one argument');
-            }
-            if (utils.isFunction(conditional)) {
-                conditional = conditional.call(this);
-            }
-            if (!options.hash.includeZero && !conditional || utils.isEmpty(conditional)) {
-                return options.inverse(this);
-            } else {
-                return options.fn(this);
-            }
-        });
-        instance.registerHelper('unless', function (conditional, options) {
-            if (arguments.length != 2) {
-                throw new Exception('#unless requires exactly one argument');
-            }
-            return instance.helpers['if'].call(this, conditional, {
-                fn: options.inverse,
-                inverse: options.fn,
-                hash: options.hash
-            });
-        });
-    };
-});
-define('skylark-handlebars/helpers/log',[],function () {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('log', function () {
-            let args = [undefined], options = arguments[arguments.length - 1];
-            for (let i = 0; i < arguments.length - 1; i++) {
-                args.push(arguments[i]);
-            }
-            let level = 1;
-            if (options.hash.level != null) {
-                level = options.hash.level;
-            } else if (options.data && options.data.level != null) {
-                level = options.data.level;
-            }
-            args[0] = level;
-            instance.log(...args);
-        });
-    };
-});
-define('skylark-handlebars/helpers/lookup',[],function () {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('lookup', function (obj, field, options) {
-            if (!obj) {
-                return obj;
-            }
-            return options.lookupProperty(obj, field);
-        });
-    };
-});
-define('skylark-handlebars/helpers/with',[
-    '../utils',
-    '../exception'
-], function (utils, Exception) {
-    'use strict';
-    return function (instance) {
-        instance.registerHelper('with', function (context, options) {
-            if (arguments.length != 2) {
-                throw new Exception('#with requires exactly one argument');
-            }
-            if (utils.isFunction(context)) {
-                context = context.call(this);
-            }
-            let fn = options.fn;
-            if (!utils.isEmpty(context)) {
-                let data = options.data;
-                if (options.data && options.ids) {
-                    data = utils.createFrame(options.data);
-                    data.contextPath = utils.appendContextPath(options.data.contextPath, options.ids[0]);
-                }
-                return fn(context, {
-                    data: data,
-                    blockParams: utils.blockParams([context], [data && data.contextPath])
-                });
-            } else {
-                return options.inverse(this);
-            }
-        });
-    };
-});
-define('skylark-handlebars/helpers',[
-    './helpers/block-helper-missing',
-    './helpers/each',
-    './helpers/helper-missing',
-    './helpers/if',
-    './helpers/log',
-    './helpers/lookup',
-    './helpers/with'
-], function (registerBlockHelperMissing, registerEach, registerHelperMissing, registerIf, registerLog, registerLookup, registerWith) {
-    'use strict';
-    function registerDefaultHelpers(instance) {
-        registerBlockHelperMissing(instance);
-        registerEach(instance);
-        registerHelperMissing(instance);
-        registerIf(instance);
-        registerLog(instance);
-        registerLookup(instance);
-        registerWith(instance);
-    }
-    function moveHelperToHooks(instance, helperName, keepHelper) {
-        if (instance.helpers[helperName]) {
-            instance.hooks[helperName] = instance.helpers[helperName];
-            if (!keepHelper) {
-                delete instance.helpers[helperName];
-            }
-        }
-    }
-    return {
-        registerDefaultHelpers: registerDefaultHelpers,
-        moveHelperToHooks: moveHelperToHooks
-    };
-});
-define('skylark-handlebars/decorators/inline',['../utils'], function (utils) {
-    'use strict';
-    return function (instance) {
-        instance.registerDecorator('inline', function (fn, props, container, options) {
-            let ret = fn;
-            if (!props.partials) {
-                props.partials = {};
-                ret = function (context, options) {
-                    let original = container.partials;
-                    container.partials = utils.extend({}, original, props.partials);
-                    let ret = fn(context, options);
-                    container.partials = original;
-                    return ret;
-                };
-            }
-            props.partials[options.args[0]] = options.fn;
-            return ret;
-        });
-    };
-});
-define('skylark-handlebars/decorators',['./decorators/inline'], function (registerInline) {
-    'use strict';
-    function registerDefaultDecorators(instance) {
-        registerInline(instance);
-    }
-    return { registerDefaultDecorators: registerDefaultDecorators };
-});
-define('skylark-handlebars/logger',['./utils'], function (utils) {
-    'use strict';
-    let logger = {
-        methodMap: [
-            'debug',
-            'info',
-            'warn',
-            'error'
-        ],
-        level: 'info',
-        lookupLevel: function (level) {
-            if (typeof level === 'string') {
-                let levelMap = utils.indexOf(logger.methodMap, level.toLowerCase());
-                if (levelMap >= 0) {
-                    level = levelMap;
-                } else {
-                    level = parseInt(level, 10);
-                }
-            }
-            return level;
-        },
-        log: function (level, ...message) {
-            level = logger.lookupLevel(level);
-            if (typeof console !== 'undefined' && logger.lookupLevel(logger.level) <= level) {
-                let method = logger.methodMap[level];
-                if (!console[method]) {
-                    method = 'log';
-                }
-                console[method](...message);
-            }
-        }
-    };
-    return logger;
-});
-define('skylark-handlebars/internal/create-new-lookup-object',['../utils'], function (utils) {
-    'use strict';
-    function createNewLookupObject(...sources) {
-        return utils.extend(Object.create(null), ...sources);
-    }
-    return { createNewLookupObject: createNewLookupObject };
-});
-define('skylark-handlebars/internal/proto-access',[
-    './create-new-lookup-object',
-    '../logger'
-], function (a, logger) {
-    'use strict';
-    const loggedProperties = Object.create(null);
-    function createProtoAccessControl(runtimeOptions) {
-        let defaultMethodWhiteList = Object.create(null);
-        defaultMethodWhiteList['constructor'] = false;
-        defaultMethodWhiteList['__defineGetter__'] = false;
-        defaultMethodWhiteList['__defineSetter__'] = false;
-        defaultMethodWhiteList['__lookupGetter__'] = false;
-        let defaultPropertyWhiteList = Object.create(null);
-        defaultPropertyWhiteList['__proto__'] = false;
-        return {
-            properties: {
-                whitelist: a.createNewLookupObject(defaultPropertyWhiteList, runtimeOptions.allowedProtoProperties),
-                defaultValue: runtimeOptions.allowProtoPropertiesByDefault
-            },
-            methods: {
-                whitelist: a.createNewLookupObject(defaultMethodWhiteList, runtimeOptions.allowedProtoMethods),
-                defaultValue: runtimeOptions.allowProtoMethodsByDefault
-            }
-        };
-    }
-    function resultIsAllowed(result, protoAccessControl, propertyName) {
-        if (typeof result === 'function') {
-            return checkWhiteList(protoAccessControl.methods, propertyName);
-        } else {
-            return checkWhiteList(protoAccessControl.properties, propertyName);
-        }
-    }
-    function checkWhiteList(protoAccessControlForType, propertyName) {
-        if (protoAccessControlForType.whitelist[propertyName] !== undefined) {
-            return protoAccessControlForType.whitelist[propertyName] === true;
-        }
-        if (protoAccessControlForType.defaultValue !== undefined) {
-            return protoAccessControlForType.defaultValue;
-        }
-        logUnexpecedPropertyAccessOnce(propertyName);
-        return false;
-    }
-    function logUnexpecedPropertyAccessOnce(propertyName) {
-        if (loggedProperties[propertyName] !== true) {
-            loggedProperties[propertyName] = true;
-            logger.log('error', `Handlebars: Access has been denied to resolve the property "${ propertyName }" because it is not an "own property" of its parent.\n` + `You can add a runtime option to disable the check or this warning:\n` + `See https://handlebarsjs.com/api-reference/runtime-options.html#options-to-control-prototype-access for details`);
-        }
-    }
-    function resetLoggedProperties() {
-        Object.keys(loggedProperties).forEach(propertyName => {
-            delete loggedProperties[propertyName];
-        });
-    }
-    return {
-        createProtoAccessControl: createProtoAccessControl,
-        resultIsAllowed: resultIsAllowed,
-        resetLoggedProperties: resetLoggedProperties
-    };
-});
-define('skylark-handlebars/base',[
-    './utils',
-    './exception',
-    './helpers',
-    './decorators',
-    './logger',
-    './internal/proto-access'
-], function (utils, Exception, helpers, c, logger, protoAccess) {
-    'use strict';
-    const VERSION = '4.7.6';
-    const COMPILER_REVISION = 8;
-    const LAST_COMPATIBLE_COMPILER_REVISION = 7;
-    const REVISION_CHANGES = {
-        1: '<= 1.0.rc.2',
-        2: '== 1.0.0-rc.3',
-        3: '== 1.0.0-rc.4',
-        4: '== 1.x.x',
-        5: '== 2.0.0-alpha.x',
-        6: '>= 2.0.0-beta.1',
-        7: '>= 4.0.0 <4.3.0',
-        8: '>= 4.3.0'
-    };
-    const objectType = '[object Object]';
-    function HandlebarsEnvironment(helpers, partials, decorators) {
-        this.helpers = helpers || {};
-        this.partials = partials || {};
-        this.decorators = decorators || {};
-        helpers.registerDefaultHelpers(this);
-        c.registerDefaultDecorators(this);
-    }
-    HandlebarsEnvironment.prototype = {
-        constructor: HandlebarsEnvironment,
-        logger: logger,
-        log: logger.log,
-        registerHelper: function (name, fn) {
-            if (utils.toString.call(name) === objectType) {
-                if (fn) {
-                    throw new Exception('Arg not supported with multiple helpers');
-                }
-                utils.extend(this.helpers, name);
-            } else {
-                this.helpers[name] = fn;
-            }
-        },
-        unregisterHelper: function (name) {
-            delete this.helpers[name];
-        },
-        registerPartial: function (name, partial) {
-            if (utils.toString.call(name) === objectType) {
-                utils.extend(this.partials, name);
-            } else {
-                if (typeof partial === 'undefined') {
-                    throw new Exception(`Attempting to register a partial called "${ name }" as undefined`);
-                }
-                this.partials[name] = partial;
-            }
-        },
-        unregisterPartial: function (name) {
-            delete this.partials[name];
-        },
-        registerDecorator: function (name, fn) {
-            if (utils.toString.call(name) === objectType) {
-                if (fn) {
-                    throw new Exception('Arg not supported with multiple decorators');
-                }
-                utils.extend(this.decorators, name);
-            } else {
-                this.decorators[name] = fn;
-            }
-        },
-        unregisterDecorator: function (name) {
-            delete this.decorators[name];
-        },
-        resetLoggedPropertyAccesses: function () {
-            protoAccess.resetLoggedProperties();
-        }
-    };
-    let log = logger.log,
-        createFrame = utils.createFrame;
-    return {
-        VERSION,
-        COMPILER_REVISION,
-        LAST_COMPATIBLE_COMPILER_REVISION,
-        REVISION_CHANGES,
-        HandlebarsEnvironment,
-        log,
-        createFrame,
-        logger
     };
 });
 define('skylark-handlebars/compiler/code-gen',['../utils'], function (a) {
@@ -3384,12 +3689,18 @@ define('skylark-handlebars/compiler/javascript-compiler',[
 });
 define('skylark-handlebars/main',[
     "skylark-langx/skylark",
+    './base',
+    "./utils",
+    "./runtime",
+    "./exception",
+    "./safe-string",
     './compiler/ast',
     './compiler/base',
     './compiler/compiler',
     './compiler/javascript-compiler',
     './compiler/visitor'
-], function (skylark, AST, base, compiler, JavaScriptCompiler, Visitor) {
+
+], function (skylark, base, Utils,runtime,Exception,SafeString, AST,cbase, compiler, JavaScriptCompiler, Visitor) {
     'use strict';
 
     function create() {
@@ -3414,8 +3725,8 @@ define('skylark-handlebars/main',[
         hb.AST = AST;
         hb.Compiler = compiler.Compiler;
         hb.JavaScriptCompiler = JavaScriptCompiler;
-        hb.Parser = base.Parser;
-        hb.parse = base.parse;
+        hb.Parser = cbase.Parser;
+        hb.parse = cbase.parse;
         hb.parseWithoutProcessing = base.parseWithoutProcessing;
         return hb;
     }
