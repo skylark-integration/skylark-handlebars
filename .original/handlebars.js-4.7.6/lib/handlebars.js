@@ -27,9 +27,9 @@ function create() {
   hb.AST = AST;
   hb.Compiler = Compiler;
   hb.JavaScriptCompiler = JavaScriptCompiler;
-  hb.Parser = Parser;
-  hb.parse = parse;
-  hb.parseWithoutProcessing = parseWithoutProcessing;
+  hb.Parser = base.Parser;
+  hb.parse = base.parse;
+  hb.parseWithoutProcessing = base.parseWithoutProcessing;
 
   return hb;
 }
