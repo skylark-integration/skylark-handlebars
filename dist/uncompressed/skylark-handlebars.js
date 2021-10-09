@@ -610,7 +610,7 @@ define('skylark-handlebars/base',[
     './decorators',
     './logger',
     './internal/proto-access'
-], function (utils, Exception, helpers, c, logger, protoAccess) {
+], function (utils, Exception, b, c, logger, protoAccess) {
     'use strict';
     const VERSION = '4.7.6';
     const COMPILER_REVISION = 8;
@@ -630,7 +630,7 @@ define('skylark-handlebars/base',[
         this.helpers = helpers || {};
         this.partials = partials || {};
         this.decorators = decorators || {};
-        helpers.registerDefaultHelpers(this);
+        b.registerDefaultHelpers(this);
         c.registerDefaultDecorators(this);
     }
     HandlebarsEnvironment.prototype = {
@@ -3711,17 +3711,19 @@ define('skylark-handlebars/main',[
         hb.Utils = Utils;
         hb.escapeExpression = Utils.escapeExpression;
         hb.VM = runtime;
+
         hb.template = function (spec) {
             return runtime.template(spec, hb);
         };
 
-
         hb.compile = function (input, options) {
             return compiler.compile(input, options, hb);
         };
+
         hb.precompile = function (input, options) {
             return compiler.precompile(input, options, hb);
         };
+        
         hb.AST = AST;
         hb.Compiler = compiler.Compiler;
         hb.JavaScriptCompiler = JavaScriptCompiler;

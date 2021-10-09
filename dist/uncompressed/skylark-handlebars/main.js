@@ -22,17 +22,19 @@ define([
         hb.Utils = Utils;
         hb.escapeExpression = Utils.escapeExpression;
         hb.VM = runtime;
+
         hb.template = function (spec) {
             return runtime.template(spec, hb);
         };
 
-
         hb.compile = function (input, options) {
             return compiler.compile(input, options, hb);
         };
+
         hb.precompile = function (input, options) {
             return compiler.precompile(input, options, hb);
         };
+        
         hb.AST = AST;
         hb.Compiler = compiler.Compiler;
         hb.JavaScriptCompiler = JavaScriptCompiler;

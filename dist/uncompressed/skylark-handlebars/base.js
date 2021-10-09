@@ -5,7 +5,7 @@ define([
     './decorators',
     './logger',
     './internal/proto-access'
-], function (utils, Exception, helpers, c, logger, protoAccess) {
+], function (utils, Exception, b, c, logger, protoAccess) {
     'use strict';
     const VERSION = '4.7.6';
     const COMPILER_REVISION = 8;
@@ -25,7 +25,7 @@ define([
         this.helpers = helpers || {};
         this.partials = partials || {};
         this.decorators = decorators || {};
-        helpers.registerDefaultHelpers(this);
+        b.registerDefaultHelpers(this);
         c.registerDefaultDecorators(this);
     }
     HandlebarsEnvironment.prototype = {
